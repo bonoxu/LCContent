@@ -26,14 +26,14 @@ EfficiencyMonitoringAlgorithm::EfficiencyMonitoringAlgorithm() :
 
 EfficiencyMonitoringAlgorithm::~EfficiencyMonitoringAlgorithm()
 {
-    PANDORA_MONITORING_API(SaveTree(this->GetPandora(), "EffTree", m_monitoringFileName, "UPDATE"));
+    PANDORA_MONITORING_API(SaveTree(this->GetPandora(), "sel", m_monitoringFileName, "RECREATE"));
 }
 
 //------------------------------------------------------------------------------------------------------------------------------------------
 
 StatusCode EfficiencyMonitoringAlgorithm::Run()
 {
-#ifdef MONITORING
+
     // Extract the mc particle - this algorithm is intended to work only with single particle samples
     const MCParticleList *pMCParticleList = NULL;
     PANDORA_RETURN_RESULT_IF(STATUS_CODE_SUCCESS, !=, PandoraContentApi::GetCurrentList(*this, pMCParticleList));
@@ -49,7 +49,8 @@ StatusCode EfficiencyMonitoringAlgorithm::Run()
     // Extract the mc particle properties
     const float mcEnergy(pMCParticle->GetEnergy());
     const int mcPDGCode(pMCParticle->GetParticleId());
-
+    const int mcPfoTarget(pMCParticle->IsPfoTarget());
+    
     if (mcEnergy < m_mcThresholdEnergy)
     {
         std::cout << "EfficiencyMonitoring - MC particle energy below threshold " << mcEnergy << "( < " << m_mcThresholdEnergy << ")" <<std::endl;
@@ -87,18 +88,64 @@ StatusCode EfficiencyMonitoringAlgorithm::Run()
             isPhotonConversion = 1;
         }
     }
+    
+    // test efficiency; use definition from CLIC particle ID efficiency
+    int nMatchPFO(0), nPDGMatch(0), nEnergyMatch(0), nDirectionMatch(0);
+    for (PfoVector::const_iterator iter = pfoVector.begin(), iterEnd = pfoVector.end(); iter != iterEnd; ++iter)
+    {
+        bool matchPFO(false), energyMatched(false), withinCone(false);
+        if (pMCParticle && pMostEnergeticPfo)
+        {
+            if (0 != pMostEnergeticPfo->GetCharge())
+            {
+                const float mcPt2(pMCParticle->GetMomentum().GetX() * pMCParticle->GetMomentum().GetX() + pMCParticle->GetMomentum().GetY() * pMCParticle->GetMomentum().GetY());
+                const float mcPt(mcPt2 > std::numeric_limits<float>::epsilon() ? std::sqrt(mcPt2) : std::numeric_limits<float>::epsilon());
+                const float recoPt2(pMostEnergeticPfo->GetMomentum().GetX() * pMostEnergeticPfo->GetMomentum().GetX() + pMostEnergeticPfo->GetMomentum().GetY() * pMostEnergeticPfo->GetMomentum().GetY());
+                const float recoPt(recoPt2 > std::numeric_limits<float>::epsilon() ? std::sqrt(recoPt2) : std::numeric_limits<float>::epsilon());
+                energyMatched = std::fabs(mcPt - recoPt) < (0.05 * mcPt2);
+                
+                withinCone = std::fabs(pMCParticle->GetMomentum().GetOpeningAngle(pMostEnergeticPfo->GetMomentum())) < 0.0174533;
+            }
+            else
+            {
+                const float mcEroot(mcEnergy >  std::numeric_limits<float>::epsilon() ? std::sqrt(mcEnergy) : std::numeric_limits<float>::epsilon());
+                energyMatched = std::fabs(mcEnergy - recoEnergy) < (4 * mcEroot + 0.5);
+                withinCone = std::fabs(pMCParticle->GetMomentum().GetOpeningAngle(pMostEnergeticPfo->GetMomentum())) < 0.174533;
+            }
+            if (energyMatched && withinCone && (std::fabs(mcPDGCode) == std::fabs(recoPDGCode)))
+                matchPFO = true;
+        }
+        if (energyMatched)
+            nEnergyMatch++;
+        if (withinCone)
+            nDirectionMatch++;
+        if (std::fabs(mcPDGCode) == std::fabs(recoPDGCode))
+            nPDGMatch++;
+        if (matchPFO)
+            nMatchPFO++;
+    }
 
+
+    const float purity( (pfoVector.size() > 0) ? static_cast<double>(nMatchPFO) / static_cast<double>(pfoVector.size()) : 0.f);
     // Fill tree with information for this single particle event
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "mcPDGCode", mcPDGCode));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "recoPDGCode", recoPDGCode));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "mcEnergy", mcEnergy));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "recoEnergy", recoEnergy));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "radius", radius));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "phi", phi));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "theta", theta));
-    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "EffTree", "isPhotonConversion", isPhotonConversion));
-    PANDORA_MONITORING_API(FillTree(this->GetPandora(), "EffTree"));
-#endif
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "mcPDGCode", mcPDGCode));
+    //PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "recoPDGCode", recoPDGCode));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "mcEnergy", mcEnergy));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "mcPfoTarget", mcPfoTarget));
+    
+    //PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "recoEnergy", recoEnergy));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "radius", radius));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "phi", phi));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "theta", theta));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "halfTheta", theta < std::atan(1)*2 ? theta : std::atan(1)*4 - theta));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "isPhotonConversion", isPhotonConversion));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "PFOMatched", nMatchPFO));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "energyMatched", nEnergyMatch));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "angleMatched", nDirectionMatch));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "pdgMatched", nPDGMatch));
+    PANDORA_MONITORING_API(SetTreeVariable(this->GetPandora(), "sel", "purity", purity));
+    PANDORA_MONITORING_API(FillTree(this->GetPandora(), "sel"));
+
     return STATUS_CODE_SUCCESS;
 }
 
